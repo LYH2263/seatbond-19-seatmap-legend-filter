@@ -1,6 +1,8 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from app.services.seat_status import SeatStatus
+
 
 class HallOut(BaseModel):
     id: int
@@ -53,6 +55,8 @@ class SeatMapCell(BaseModel):
     is_aisle: bool
     occupied: bool
     heat: float
+    status: SeatStatus
+    matched: bool  # True when the cell's status passes the requested ?status= filter
 
 
 class SeatMapOut(BaseModel):
@@ -60,4 +64,10 @@ class SeatMapOut(BaseModel):
     hall_name: str
     rows: int
     cols: int
+    # Full status enum — the frontend legend renders from this, same values
+    # the ?status= query param accepts. New states appear here automatically.
+    statuses: list[SeatStatus]
+    # Filter actually applied; equals `statuses` when the param is omitted
+    # ("select none" and "select all" both resolve to the full set).
+    selected_statuses: list[SeatStatus]
     cells: list[SeatMapCell]

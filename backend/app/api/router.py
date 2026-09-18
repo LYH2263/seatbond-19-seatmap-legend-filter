@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from app.services.bond_engine import (
     find_bond_across_rows,
     find_contiguous_block,
 )
+from app.services.seat_status import SeatStatus, derive_status
 
 api_router = APIRouter()
 
@@ -64,8 +65,29 @@ def list_showtimes(db: Session = Depends(get_db)):
     return out
 
 
-@api_router.get("/seatmap/{showtime_id}", response_model=SeatMapOut)
-def seatmap(showtime_id: int, db: Session = Depends(get_db)):
+@api_router.get(
+    "/seatmap/{showtime_id}",
+    response_model=SeatMapOut,
+    summary="场次座位图（含稳定 status 与状态筛选）",
+    description=(
+        "每个单元格返回稳定 `status`（free 空闲 / occupied 占用 / aisle 过道，"
+        "与图例字段 `statuses` 同一枚举，后续新增遮挡、轮椅、情侣等标记会并入该枚举）。\n\n"
+        "筛选：重复查询参数 `?status=free&status=occupied` 指定状态集合，"
+        "命中格 `matched=true`，未命中格 `matched=false`；**始终返回完整厅图几何**，"
+        "由前端负责弱化未命中格。\n\n"
+        "语义约定：不传 `status` 参数 = 全选 = 全不选，三者都视为展示全部"
+        "（`selected_statuses` 回显实际生效集合），不会出现空白厅。"
+        "占用按场次实时计算，切换场次重新请求即可，不要复用上一场次的占用结果。"
+    ),
+)
+def seatmap(
+    showtime_id: int,
+    status: list[SeatStatus] | None = Query(
+        default=None,
+        description="按状态集合筛选（可重复传参）。省略=全选=全不选，均展示全部。",
+    ),
+    db: Session = Depends(get_db),
+):
     st = db.get(Showtime, showtime_id)
     if not st:
         raise HTTPException(404, "场次不存在")
@@ -77,18 +99,24 @@ def seatmap(showtime_id: int, db: Session = Depends(get_db)):
     for h in holds:
         for c in range(h.start_col, h.end_col + 1):
             occupied.add((h.row, c))
+    all_statuses = list(SeatStatus)
+    # 不传参数、全选、全不选三者同义：展示全部状态。
+    selected = set(status) if status else set(all_statuses)
     cells: list[SeatMapCell] = []
-    total = hall.rows * hall.cols
     for r in range(1, hall.rows + 1):
         for c in range(1, hall.cols + 1):
+            is_aisle = c in aisles
             occ = (r, c) in occupied
+            cell_status = derive_status(is_aisle=is_aisle, occupied=occ)
             cells.append(
                 SeatMapCell(
                     row=r,
                     col=c,
-                    is_aisle=c in aisles,
+                    is_aisle=is_aisle,
                     occupied=occ,
-                    heat=1.0 if occ else (0.15 if c in aisles else 0.0),
+                    heat=1.0 if occ else (0.15 if is_aisle else 0.0),
+                    status=cell_status,
+                    matched=cell_status in selected,
                 )
             )
     return SeatMapOut(
@@ -96,6 +124,8 @@ def seatmap(showtime_id: int, db: Session = Depends(get_db)):
         hall_name=hall.name,
         rows=hall.rows,
         cols=hall.cols,
+        statuses=all_statuses,
+        selected_statuses=[s for s in all_statuses if s in selected],
         cells=cells,
     )
 
