@@ -1,6 +1,8 @@
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from app.services.seat_status import SeatStatus
+
 
 class HallOut(BaseModel):
     id: int
@@ -47,9 +49,15 @@ class ConflictOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SeatStatusInfo(BaseModel):
+    status: SeatStatus
+    label: str
+
+
 class SeatMapCell(BaseModel):
     row: int
     col: int
+    status: SeatStatus
     is_aisle: bool
     occupied: bool
     heat: float
@@ -61,3 +69,5 @@ class SeatMapOut(BaseModel):
     rows: int
     cols: int
     cells: list[SeatMapCell]
+    # 状态图例：与前端筛选共用同一套枚举，前端据此渲染筛选 chips，不自行猜状态
+    available_statuses: list[SeatStatusInfo]

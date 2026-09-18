@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.schemas.schemas import (
     HoldRequest,
     SeatMapCell,
     SeatMapOut,
+    SeatStatusInfo,
     ShowtimeOut,
 )
 from app.services.bond_engine import (
@@ -22,6 +23,7 @@ from app.services.bond_engine import (
     find_bond_across_rows,
     find_contiguous_block,
 )
+from app.services.seat_status import STATUS_LABELS, SeatStatus, cell_status
 
 api_router = APIRouter()
 
@@ -65,7 +67,19 @@ def list_showtimes(db: Session = Depends(get_db)):
 
 
 @api_router.get("/seatmap/{showtime_id}", response_model=SeatMapOut)
-def seatmap(showtime_id: int, db: Session = Depends(get_db)):
+def seatmap(
+    showtime_id: int,
+    status: list[SeatStatus] | None = Query(
+        default=None,
+        description=(
+            "按状态集合过滤格子，可重复传参取并集，如 ?status=free&status=aisle。"
+            "省略该参数即返回全部格子（前端「全不选」等同不过滤，展示全部，不会出现空白厅）。"
+            "可选枚举见响应 available_statuses，与前端筛选共用同一套。"
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """厅图座位格：每格带稳定 status（free/occupied/aisle），占用按当前场次实时计算。"""
     st = db.get(Showtime, showtime_id)
     if not st:
         raise HTTPException(404, "场次不存在")
@@ -77,15 +91,19 @@ def seatmap(showtime_id: int, db: Session = Depends(get_db)):
     for h in holds:
         for c in range(h.start_col, h.end_col + 1):
             occupied.add((h.row, c))
+    wanted: set[SeatStatus] | None = set(status) if status else None
     cells: list[SeatMapCell] = []
-    total = hall.rows * hall.cols
     for r in range(1, hall.rows + 1):
         for c in range(1, hall.cols + 1):
             occ = (r, c) in occupied
+            st_status = cell_status(is_aisle=c in aisles, occupied=occ)
+            if wanted is not None and st_status not in wanted:
+                continue
             cells.append(
                 SeatMapCell(
                     row=r,
                     col=c,
+                    status=st_status,
                     is_aisle=c in aisles,
                     occupied=occ,
                     heat=1.0 if occ else (0.15 if c in aisles else 0.0),
@@ -97,6 +115,9 @@ def seatmap(showtime_id: int, db: Session = Depends(get_db)):
         rows=hall.rows,
         cols=hall.cols,
         cells=cells,
+        available_statuses=[
+            SeatStatusInfo(status=s, label=STATUS_LABELS[s]) for s in SeatStatus
+        ],
     )
 
 
